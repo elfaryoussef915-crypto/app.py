@@ -100,7 +100,7 @@ if choice == "Diabetes":
     st.header("Diabetes Prediction")
     st.write("Enter patient's clinical values:")
 
-    cols = st.columns(4)  # Arrange inputs side by side
+    cols = st.columns(4)
     with cols[0]:
         Pregnancies = st.number_input("Pregnancies", min_value=0, max_value=20, value=0)
         Glucose = st.number_input("Glucose", min_value=0, value=120)
@@ -159,30 +159,33 @@ if choice == "Heart Disease":
 
     cols = st.columns(4)  # Arrange inputs side by side
     with cols[0]:
-        Age = st.number_input("Age", min_value=0, value=50)
-        Sex = st.selectbox("Sex (0 = female, 1 = male)", [0,1])
-        ChestPainType = st.number_input("Chest Pain Type (0-3)", min_value=0, max_value=3, value=0)
+        age = st.number_input("Age", min_value=0, value=50)
+        sex = st.selectbox("Sex (0 = female, 1 = male)", [0,1])
+        cp = st.number_input("Chest Pain Type (0-3)", min_value=0, max_value=3, value=0)
     with cols[1]:
-        RestingBloodPressure = st.number_input("Resting Blood Pressure", min_value=0, value=120)
-        SerumCholesterol = st.number_input("Serum Cholesterol", min_value=0, value=230)
-        FastingBloodSugarOver120 = st.selectbox("Fasting Blood Sugar > 120 mg/dl", [0,1])
+        trestbps = st.number_input("Resting Blood Pressure", min_value=0, value=120)
+        chol = st.number_input("Serum Cholesterol", min_value=0, value=230)
+        fbs = st.selectbox("Fasting Blood Sugar > 120 mg/dl", [0,1])
     with cols[2]:
-        RestingECG = st.number_input("Resting ECG (0-2)", min_value=0, max_value=2, value=1)
-        MaxHeartRateAchieved = st.number_input("Max Heart Rate Achieved", min_value=0, value=150)
-        ExerciseInducedAngina = st.selectbox("Exercise Induced Angina (0 or 1)", [0,1])
+        restecg = st.number_input("Resting ECG (0-2)", min_value=0, max_value=2, value=1)
+        thalach = st.number_input("Max Heart Rate Achieved", min_value=0, value=150)
+        exang = st.selectbox("Exercise Induced Angina (0 or 1)", [0,1])
     with cols[3]:
-        STDepression = st.number_input("ST Depression", format="%.2f", value=1.0)
-        STSegmentSlope = st.number_input("ST Segment Slope (0-2)", min_value=0, max_value=2, value=1)
-        NumMajorVesselsColored = st.number_input("Number of Major Vessels Colored (0-3)", min_value=0, max_value=3, value=0)
-        ThalassemiaType = st.number_input("Thalassemia Type (0-3)", min_value=0, max_value=3, value=3)
+        oldpeak = st.number_input("ST Depression", format="%.2f", value=1.0)
+        slope = st.number_input("ST Segment Slope (0-2)", min_value=0, max_value=2, value=1)
+        ca = st.number_input("Number of Major Vessels Colored (0-3)", min_value=0, max_value=3, value=0)
+        thal = st.number_input("Thalassemia Type (0-3)", min_value=0, max_value=3, value=3)
 
-    feat_names_heart = ['Age','Sex','ChestPainType','RestingBloodPressure','SerumCholesterol',
-                        'FastingBloodSugarOver120','RestingECG','MaxHeartRateAchieved',
-                        'ExerciseInducedAngina','STDepression','STSegmentSlope','NumMajorVesselsColored','ThalassemiaType']
+    # Use original feature names for model compatibility
+    feat_names_heart_model = ['age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 'thalach',
+                              'exang', 'oldpeak', 'slope', 'ca', 'thal']
+    # Display names for SHAP explanation (user-friendly)
+    feat_names_heart_display = ['Age', 'Sex', 'ChestPainType', 'RestingBloodPressure', 'SerumCholesterol',
+                                'FastingBloodSugarOver120', 'RestingECG', 'MaxHeartRateAchieved',
+                                'ExerciseInducedAngina', 'STDepression', 'STSegmentSlope', 'NumMajorVesselsColored', 'ThalassemiaType']
 
-    Xh = pd.DataFrame([[Age,Sex,ChestPainType,RestingBloodPressure,SerumCholesterol,FastingBloodSugarOver120,
-                        RestingECG,MaxHeartRateAchieved,ExerciseInducedAngina,STDepression,STSegmentSlope,
-                        NumMajorVesselsColored,ThalassemiaType]], columns=feat_names_heart)
+    Xh = pd.DataFrame([[age, sex, cp, trestbps, chol, fbs, restecg, thalach, exang, oldpeak, slope, ca, thal]],
+                      columns=feat_names_heart_model)
 
     if st.button("Predict Heart Disease"):
         if heart_model is None:
@@ -203,15 +206,19 @@ if choice == "Heart Disease":
                 st.subheader("Why the model decided this?")
                 t, shap_res, error = explain_with_fallback(heart_model, Xh)
                 if t == "shap":
-                    display_shap_waterfall(shap_res, feat_names_heart)
-                    st.markdown(contribution_text_from_shap(shap_res, feat_names_heart, top_n=6), unsafe_allow_html=True)
+                    # Use display names for SHAP explanation
+                    shap_res.base_values = shap_res.base_values  # No change needed, just ensuring compatibility
+                    shap_res.data = shap_res.data  # Data remains the same
+                    shap_res.values = shap_res.values  # Values remain the same
+                    display_shap_waterfall(shap_res, feat_names_heart_display)
+                    st.markdown(contribution_text_from_shap(shap_res, feat_names_heart_display, top_n=6), unsafe_allow_html=True)
                 else:
                     st.warning(f"SHAP explanation failed: {error}. Showing fallback.")
                     if hasattr(heart_model, "coef_"):
                         coefs = heart_model.coef_[0]
                         contributions = (Xh.values[0] * coefs)
                         abs_pct = 100 * np.abs(contributions) / np.sum(np.abs(contributions))
-                        df = pd.DataFrame({"feature": feat_names_heart, "contribution": contributions, "pct": abs_pct})
+                        df = pd.DataFrame({"feature": feat_names_heart_display, "contribution": contributions, "pct": abs_pct})
                         st.table(df.sort_values("pct", ascending=False).head(8))
                     else:
                         st.info("No coefficients to show. Consider uploading a background dataset for better SHAP explanations.")
@@ -223,7 +230,7 @@ if choice == "Parkinson's":
     st.header("Parkinson's Disease Prediction")
     st.write("Enter vocal features:")
 
-    cols = st.columns(4)  # Arrange inputs side by side
+    cols = st.columns(4)
     with cols[0]:
         Fo = st.number_input("MDVP:Fo(Hz)", value=120.0)
         Fhi = st.number_input("MDVP:Fhi(Hz)", value=150.0)
