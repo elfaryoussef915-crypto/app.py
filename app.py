@@ -7,122 +7,161 @@ Original file is located at
     https://colab.research.google.com/drive/15UOTMEko7Pi9Eej7D17c96Y-2etyCf3K
 """
 
+# app.py
 import streamlit as st
 import pickle
 import numpy as np
+import pandas as pd
 import shap
 import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings("ignore")
 
-# ----------------- Load Models -----------------
-diabetes_model = pickle.load(open("diabetes_model.sav", "rb"))
-heart_model = pickle.load(open("heart_disease_model.sav", "rb"))
-parkinsons_model = pickle.load(open("parkinsons_model.sav", "rb"))
+# ---------- Helpers ----------
+def load_model_safe(path):
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except Exception as e:
+        st.error(f"Failed to load model `{path}`: {e}")
+        return None
 
-st.set_page_config(page_title="Multiple Disease Prediction App", layout="wide")
+def explain_prediction_shap(model, background, X):
+    try:
+        explainer = shap.Explainer(model, background, silent=True)
+        shap_values = explainer(X)
+        return shap_values, explainer
+    except Exception as e:
+        return None, e
 
-st.title("🩺 Multiple Disease Prediction System")
-st.write("This app predicts **Diabetes**, **Heart Disease**, and **Parkinson’s Disease** using Machine Learning.")
+def contribution_text_from_shap(shap_values, feature_names, top_n=1):
+    vals = shap_values.values[0]
+    abs_vals = np.abs(vals)
+    if abs_vals.sum() == 0:
+        return "No feature contributions available."
+    pct = 100 * abs_vals / abs_vals.sum()
+    df = pd.DataFrame({
+        "feature": feature_names,
+        "shap_value": vals,
+        "importance_pct": pct
+    }).sort_values("importance_pct", ascending=False).head(top_n)
+    r = df.iloc[0]
+    sign = "increases" if r["shap_value"] > 0 else "decreases"
+    return f"**Top Feature:** {r['feature']} ({r['importance_pct']:.1f}% | {sign} risk)"
 
-# Sidebar for navigation
-with st.sidebar:
-    st.header("Choose Disease Model")
-    selected = st.radio("Select a model:", ("Diabetes", "Heart Disease", "Parkinson’s Disease"))
+def explain_with_fallback(model, X_df, feature_names):
+    background = X_df.sample(1) if len(X_df) > 0 else X_df
+    shap_res, info = explain_prediction_shap(model, background, X_df)
+    if shap_res is not None:
+        return contribution_text_from_shap(shap_res, feature_names, top_n=1)
+    else:
+        return f"SHAP failed: {info}"
 
-# ----------------- Diabetes Prediction -----------------
-if selected == "Diabetes":
-    st.subheader("🔬 Diabetes Prediction")
-    
-    Pregnancies = st.number_input("Pregnancies", min_value=0, value=0)
-    Glucose = st.number_input("Glucose", min_value=0, value=0)
-    BloodPressure = st.number_input("Blood Pressure", min_value=0, value=0)
-    SkinThickness = st.number_input("Skin Thickness", min_value=0, value=0)
-    Insulin = st.number_input("Insulin", min_value=0, value=0)
-    BMI = st.number_input("BMI", min_value=0.0, value=0.0)
-    DiabetesPedigreeFunction = st.number_input("Diabetes Pedigree Function", min_value=0.0, value=0.0)
-    Age = st.number_input("Age", min_value=0, value=0)
-    
+# ---------- Load models ----------
+st.set_page_config(page_title="Smart Health Assistant", page_icon="🩺", layout="centered")
+st.title("Smart Health Assistant")
+
+diabetes_model = load_model_safe("diabetes_model.sav")
+heart_model = load_model_safe("heart_disease_model.sav")
+parkinsons_model = load_model_safe("parkinsons_model.sav")
+
+choice = st.sidebar.selectbox("Choose prediction", ["Home", "Diabetes", "Heart Disease", "Parkinson's"])
+
+# ---------------- Diabetes ----------------
+if choice == "Diabetes":
+    st.header("Diabetes Prediction")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        Pregnancies = st.number_input("Pregnancies", 0, 20, 0)
+        Glucose = st.number_input("Glucose", 0, 300, 120)
+        BloodPressure = st.number_input("Blood Pressure", 0, 200, 70)
+        SkinThickness = st.number_input("Skin Thickness", 0, 100, 20)
+    with c2:
+        Insulin = st.number_input("Insulin", 0, 900, 80)
+        BMI = st.number_input("BMI", 0.0, 70.0, 25.0)
+        DPF = st.number_input("Diabetes Pedigree Function", 0.0, 3.0, 0.5)
+        Age = st.number_input("Age", 0, 120, 35)
+
+    feature_names = ['Pregnancies','Glucose','BloodPressure','SkinThickness','Insulin','BMI','DiabetesPedigreeFunction','Age']
+    X = pd.DataFrame([[Pregnancies,Glucose,BloodPressure,SkinThickness,Insulin,BMI,DPF,Age]], columns=feature_names)
+
     if st.button("Predict Diabetes"):
-        diab_prediction = diabetes_model.predict([[Pregnancies, Glucose, BloodPressure, SkinThickness,
-                                                   Insulin, BMI, DiabetesPedigreeFunction, Age]])
-        st.success("✅ Person is Diabetic" if diab_prediction[0] == 1 else "❌ Person is Not Diabetic")
+        if diabetes_model:
+            pred = diabetes_model.predict(X)[0]
+            prob = diabetes_model.predict_proba(X)[0,1] if hasattr(diabetes_model,"predict_proba") else None
+            st.write("✅ Not diabetic" if pred==0 else "⚠️ Diabetic")
+            if prob is not None:
+                st.write(f"Probability: {prob*100:.1f}%")
+            st.info(explain_with_fallback(diabetes_model, X, feature_names))
 
-    # SHAP feature importance
-    st.subheader("📊 Most Important Features (Diabetes)")
-    explainer = shap.TreeExplainer(diabetes_model)
-    shap_values = explainer.shap_values(np.zeros((1,8)))
-    fig, ax = plt.subplots()
-    shap.summary_plot(shap_values, features=np.zeros((1,8)), feature_names=[
-        "Pregnancies","Glucose","BloodPressure","SkinThickness","Insulin","BMI","DiabetesPedigreeFunction","Age"
-    ], show=False)
-    st.pyplot(fig)
+# ---------------- Heart Disease ----------------
+if choice == "Heart Disease":
+    st.header("Heart Disease Prediction")
 
-# ----------------- Heart Disease Prediction -----------------
-elif selected == "Heart Disease":
-    st.subheader("❤️ Heart Disease Prediction")
-    
-    Age = st.number_input("Age", min_value=0, value=0)
-    Sex = st.number_input("Sex (1=Male, 0=Female)", min_value=0, max_value=1, value=0)
-    ChestPainType = st.number_input("Chest Pain Type (0-3)", min_value=0, max_value=3, value=0)
-    RestingBloodPressure = st.number_input("Resting Blood Pressure", min_value=0, value=0)
-    SerumCholesterol = st.number_input("Serum Cholesterol", min_value=0, value=0)
-    FastingBloodSugarOver120 = st.number_input("Fasting Blood Sugar >120 (1=Yes,0=No)", min_value=0, max_value=1, value=0)
-    RestingECG = st.number_input("Resting ECG (0-2)", min_value=0, max_value=2, value=0)
-    MaxHeartRateAchieved = st.number_input("Max Heart Rate", min_value=0, value=0)
-    ExerciseInducedAngina = st.number_input("Exercise Induced Angina (1=Yes,0=No)", min_value=0, max_value=1, value=0)
-    STDepression = st.number_input("ST Depression", min_value=0.0, value=0.0)
-    STSegmentSlope = st.number_input("ST Segment Slope (0-2)", min_value=0, max_value=2, value=0)
-    NumMajorVesselsColored = st.number_input("Num Major Vessels Colored (0-3)", min_value=0, max_value=3, value=0)
-    ThalassemiaType = st.number_input("Thalassemia Type (1-3)", min_value=1, max_value=3, value=1)
+    c1, c2 = st.columns(2)
+    with c1:
+        Age = st.number_input("Age", 0, 120, 50)
+        Sex = st.selectbox("Sex (0=female,1=male)", [0,1])
+        ChestPainType = st.number_input("Chest Pain Type (0-3)", 0, 3, 0)
+        RestingBloodPressure = st.number_input("Resting BP", 0, 250, 120)
+        SerumCholesterol = st.number_input("Cholesterol", 0, 600, 230)
+        FBS = st.selectbox("FBS > 120", [0,1])
+    with c2:
+        RestECG = st.number_input("Resting ECG (0-2)", 0, 2, 1)
+        MaxHR = st.number_input("Max HR", 0, 250, 150)
+        ExAngina = st.selectbox("Exercise Angina", [0,1])
+        STDep = st.number_input("ST Depression", 0.0, 10.0, 1.0)
+        STSlope = st.number_input("ST Segment Slope (0-2)", 0, 2, 1)
+        NumVessels = st.number_input("Major Vessels (0-3)", 0, 3, 0)
+        Thal = st.number_input("Thalassemia (0-3)", 0, 3, 3)
+
+    feat_names_heart = ['Age','Sex','ChestPainType','RestingBloodPressure','SerumCholesterol',
+                        'FastingBloodSugarOver120','RestingECG','MaxHeartRateAchieved',
+                        'ExerciseInducedAngina','STDepression','STSegmentSlope','NumMajorVesselsColored','ThalassemiaType']
+
+    Xh = pd.DataFrame([[Age,Sex,ChestPainType,RestingBloodPressure,SerumCholesterol,
+                        FBS,RestECG,MaxHR,ExAngina,STDep,STSlope,NumVessels,Thal]],
+                      columns=feat_names_heart)
 
     if st.button("Predict Heart Disease"):
-        heart_prediction = heart_model.predict([[Age, Sex, ChestPainType, RestingBloodPressure,
-                                                 SerumCholesterol, FastingBloodSugarOver120, RestingECG,
-                                                 MaxHeartRateAchieved, ExerciseInducedAngina, STDepression,
-                                                 STSegmentSlope, NumMajorVesselsColored, ThalassemiaType]])
-        st.success("✅ Person has Heart Disease" if heart_prediction[0] == 1 else "❌ Person does Not have Heart Disease")
+        if heart_model:
+            pred = heart_model.predict(Xh)[0]
+            prob = heart_model.predict_proba(Xh)[0,1] if hasattr(heart_model,"predict_proba") else None
+            st.write("✅ No heart disease" if pred==0 else "⚠️ Heart disease")
+            if prob is not None:
+                st.write(f"Probability: {prob*100:.1f}%")
+            st.info(explain_with_fallback(heart_model, Xh, feat_names_heart))
 
-    # SHAP feature importance
-    st.subheader("📊 Most Important Features (Heart Disease)")
-    explainer = shap.TreeExplainer(heart_model)
-    shap_values = explainer.shap_values(np.zeros((1,13)))
-    fig, ax = plt.subplots()
-    shap.summary_plot(shap_values, features=np.zeros((1,13)), feature_names=[
-        "Age","Sex","ChestPainType","RestingBloodPressure","SerumCholesterol",
-        "FastingBloodSugarOver120","RestingECG","MaxHeartRateAchieved",
-        "ExerciseInducedAngina","STDepression","STSegmentSlope",
-        "NumMajorVesselsColored","ThalassemiaType"
-    ], show=False)
-    st.pyplot(fig)
+# ---------------- Parkinson's ----------------
+if choice == "Parkinson's":
+    st.header("Parkinson's Prediction")
 
-# ----------------- Parkinson’s Prediction -----------------
-elif selected == "Parkinson’s Disease":
-    st.subheader("🧠 Parkinson’s Disease Prediction")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        Fo = st.number_input("MDVP:Fo(Hz)", value=120.0)
+        Fhi = st.number_input("MDVP:Fhi(Hz)", value=150.0)
+        Flo = st.number_input("MDVP:Flo(Hz)", value=110.0)
+    with c2:
+        Jitter = st.number_input("MDVP:Jitter(%)", value=0.01)
+        JitterAbs = st.number_input("MDVP:Jitter(Abs)", value=0.00008)
+        RAP = st.number_input("MDVP:RAP", value=0.004)
+        PPQ = st.number_input("MDVP:PPQ", value=0.006)
+    with c3:
+        Shimmer = st.number_input("MDVP:Shimmer", value=0.05)
+        HNR = st.number_input("HNR", value=20.0)
+        PPE = st.number_input("PPE", value=0.28)
 
-    MDVP_Fo = st.number_input("MDVP:Fo(Hz)", min_value=0.0, value=0.0)
-    MDVP_Fhi = st.number_input("MDVP:Fhi(Hz)", min_value=0.0, value=0.0)
-    MDVP_Flo = st.number_input("MDVP:Flo(Hz)", min_value=0.0, value=0.0)
-    MDVP_Jitter = st.number_input("MDVP:Jitter(%)", min_value=0.0, value=0.0)
-    MDVP_Shimmer = st.number_input("MDVP:Shimmer", min_value=0.0, value=0.0)
-    HNR = st.number_input("HNR", min_value=0.0, value=0.0)
-    RPDE = st.number_input("RPDE", min_value=0.0, value=0.0)
-    DFA = st.number_input("DFA", min_value=0.0, value=0.0)
-    spread1 = st.number_input("Spread1", min_value=0.0, value=0.0)
-    spread2 = st.number_input("Spread2", min_value=0.0, value=0.0)
-    D2 = st.number_input("D2", min_value=0.0, value=0.0)
-    PPE = st.number_input("PPE", min_value=0.0, value=0.0)
+    feat_names_par = ['MDVP:Fo(Hz)','MDVP:Fhi(Hz)','MDVP:Flo(Hz)','MDVP:Jitter(%)','MDVP:Jitter(Abs)','MDVP:RAP','MDVP:PPQ','MDVP:Shimmer','HNR','PPE']
 
-    if st.button("Predict Parkinson’s"):
-        parkinsons_prediction = parkinsons_model.predict([[MDVP_Fo, MDVP_Fhi, MDVP_Flo, MDVP_Jitter,
-                                                           MDVP_Shimmer, HNR, RPDE, DFA, spread1, spread2, D2, PPE]])
-        st.success("✅ Person has Parkinson’s Disease" if parkinsons_prediction[0] == 1 else "❌ Person does Not have Parkinson’s Disease")
+    Xp = pd.DataFrame([[Fo,Fhi,Flo,Jitter,JitterAbs,RAP,PPQ,Shimmer,HNR,PPE]], columns=feat_names_par)
 
-    # SHAP feature importance
-    st.subheader("📊 Most Important Features (Parkinson’s)")
-    explainer = shap.TreeExplainer(parkinsons_model)
-    shap_values = explainer.shap_values(np.zeros((1,12)))
-    fig, ax = plt.subplots()
-    shap.summary_plot(shap_values, features=np.zeros((1,12)), feature_names=[
-        "MDVP_Fo","MDVP_Fhi","MDVP_Flo","MDVP_Jitter","MDVP_Shimmer",
-        "HNR","RPDE","DFA","Spread1","Spread2","D2","PPE"
-    ], show=False)
-    st.pyplot(fig)
+    if st.button("Predict Parkinson's"):
+        if parkinsons_model:
+            pred = parkinsons_model.predict(Xp)[0]
+            prob = parkinsons_model.predict_proba(Xp)[0,1] if hasattr(parkinsons_model,"predict_proba") else None
+            st.write("✅ No Parkinson's" if pred==0 else "⚠️ Parkinson's")
+            if prob is not None:
+                st.write(f"Probability: {prob*100:.1f}%")
+            st.info(explain_with_fallback(parkinsons_model, Xp, feat_names_par))
+
