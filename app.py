@@ -34,7 +34,28 @@ def explain_prediction_shap(model, background, X):
     except Exception as e:
         return None, e
 
-def contribution_text_from_shap(shap_values, feature_names, top_n=1):
+def display_shap_waterfall(shap_values, feature_names):
+    try:
+        fig = plt.figure(figsize=(6,4))
+        shap.plots.waterfall(shap_values[0], show=False)
+        st.pyplot(fig)
+    except Exception:
+        vals = shap_values.values[0]
+        abs_vals = np.abs(vals)
+        pct = 100 * abs_vals / np.sum(abs_vals) if np.sum(abs_vals) != 0 else np.zeros_like(abs_vals)
+        df = pd.DataFrame({"feature": feature_names, "contribution": vals, "abs_pct": pct})
+        df = df.sort_values("abs_pct", ascending=False).head(10)
+        st.table(df.reset_index(drop=True))
+
+def explain_with_fallback(model, X_df):
+    background = X_df.sample(20) if len(X_df) >= 20 else X_df
+    shap_res, info = explain_prediction_shap(model, background, X_df)
+    if shap_res is not None:
+        return ("shap", shap_res, None)
+    else:
+        return ("error", None, info)
+
+def contribution_text_from_shap(shap_values, feature_names, top_n=5):
     vals = shap_values.values[0]
     abs_vals = np.abs(vals)
     if abs_vals.sum() == 0:
@@ -45,123 +66,228 @@ def contribution_text_from_shap(shap_values, feature_names, top_n=1):
         "shap_value": vals,
         "importance_pct": pct
     }).sort_values("importance_pct", ascending=False).head(top_n)
-    r = df.iloc[0]
-    sign = "increases" if r["shap_value"] > 0 else "decreases"
-    return f"**Top Feature:** {r['feature']} ({r['importance_pct']:.1f}% | {sign} risk)"
-
-def explain_with_fallback(model, X_df, feature_names):
-    background = X_df.sample(1) if len(X_df) > 0 else X_df
-    shap_res, info = explain_prediction_shap(model, background, X_df)
-    if shap_res is not None:
-        return contribution_text_from_shap(shap_res, feature_names, top_n=1)
-    else:
-        return f"SHAP failed: {info}"
+    most_important = df.iloc[0]["feature"]
+    rows = [f"**Most Important Feature**: {most_important} ({df.iloc[0]['importance_pct']:.1f}% of prediction impact)"]
+    for _, r in df.iterrows():
+        sign = "increases" if r["shap_value"] > 0 else "decreases"
+        rows.append(f"- **{r['feature']}**: {r['importance_pct']:.1f}% ({sign} predicted risk)")
+    return "\n".join(rows)
 
 # ---------- Load models ----------
 st.set_page_config(page_title="Smart Health Assistant", page_icon="🩺", layout="centered")
 st.title("Smart Health Assistant")
+st.markdown("**Slogan:** *Your health, explained — AI predictions with clear reasons.*")
+st.write("---")
 
 diabetes_model = load_model_safe("diabetes_model.sav")
 heart_model = load_model_safe("heart_disease_model.sav")
 parkinsons_model = load_model_safe("parkinsons_model.sav")
 
+# Sidebar: choose app
 choice = st.sidebar.selectbox("Choose prediction", ["Home", "Diabetes", "Heart Disease", "Parkinson's"])
 
-# ---------------- Diabetes ----------------
+if choice == "Home":
+    st.header("Welcome 👋")
+    st.markdown("""
+    This web app hosts three disease prediction models (Diabetes, Heart Disease, Parkinson's) **with explainability**.
+    - Enter patient values in the chosen app.
+    - Click **Predict** to get a probability/class and an explanation of the model's decision using SHAP (when available).
+    """)
+    st.info("Tip: For best SHAP explanations, provide realistic feature values. SHAP can be slower for some models (SVC).")
+
+# ---------------- Diabetes UI ----------------
 if choice == "Diabetes":
     st.header("Diabetes Prediction")
+    st.write("Enter patient's clinical values:")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        Pregnancies = st.number_input("Pregnancies", 0, 20, 0)
-        Glucose = st.number_input("Glucose", 0, 300, 120)
-        BloodPressure = st.number_input("Blood Pressure", 0, 200, 70)
-        SkinThickness = st.number_input("Skin Thickness", 0, 100, 20)
-    with c2:
-        Insulin = st.number_input("Insulin", 0, 900, 80)
-        BMI = st.number_input("BMI", 0.0, 70.0, 25.0)
-        DPF = st.number_input("Diabetes Pedigree Function", 0.0, 3.0, 0.5)
-        Age = st.number_input("Age", 0, 120, 35)
+    cols = st.columns(4)  # Arrange inputs side by side
+    with cols[0]:
+        Pregnancies = st.number_input("Pregnancies", min_value=0, max_value=20, value=0)
+        Glucose = st.number_input("Glucose", min_value=0, value=120)
+    with cols[1]:
+        BloodPressure = st.number_input("Blood Pressure", min_value=0, value=70)
+        SkinThickness = st.number_input("Skin Thickness", min_value=0, value=20)
+    with cols[2]:
+        Insulin = st.number_input("Insulin", min_value=0, value=80)
+        BMI = st.number_input("BMI", min_value=0.0, value=25.0, format="%.2f")
+    with cols[3]:
+        DPF = st.number_input("Diabetes Pedigree Function", min_value=0.0, value=0.5, format="%.3f")
+        Age = st.number_input("Age", min_value=0, max_value=120, value=35)
 
     feature_names = ['Pregnancies','Glucose','BloodPressure','SkinThickness','Insulin','BMI','DiabetesPedigreeFunction','Age']
     X = pd.DataFrame([[Pregnancies,Glucose,BloodPressure,SkinThickness,Insulin,BMI,DPF,Age]], columns=feature_names)
 
     if st.button("Predict Diabetes"):
-        if diabetes_model:
-            pred = diabetes_model.predict(X)[0]
-            prob = diabetes_model.predict_proba(X)[0,1] if hasattr(diabetes_model,"predict_proba") else None
-            st.write("✅ Not diabetic" if pred==0 else "⚠️ Diabetic")
-            if prob is not None:
-                st.write(f"Probability: {prob*100:.1f}%")
-            st.info(explain_with_fallback(diabetes_model, X, feature_names))
+        if diabetes_model is None:
+            st.error("Diabetes model not loaded.")
+        else:
+            try:
+                pred = diabetes_model.predict(X)[0]
+                prob = None
+                if hasattr(diabetes_model, "predict_proba"):
+                    prob = diabetes_model.predict_proba(X)[0,1]
+                elif hasattr(diabetes_model, "decision_function"):
+                    import scipy.special as sc
+                    d = diabetes_model.decision_function(X)[0]
+                    prob = sc.expit(d)
+                if prob is not None:
+                    st.write(f"Predicted probability of positive (disease): **{prob*100:.1f}%**")
+                st.write("Predicted class:", "⚠️ Diabetic" if pred==1 else "✅ Not diabetic")
 
-# ---------------- Heart Disease ----------------
+                st.subheader("Why the model decided this?")
+                t, shap_res, error = explain_with_fallback(diabetes_model, X)
+                if t == "shap":
+                    display_shap_waterfall(shap_res, feature_names)
+                    st.markdown(contribution_text_from_shap(shap_res, feature_names, top_n=5), unsafe_allow_html=True)
+                else:
+                    st.warning(f"SHAP explanation failed: {error}. Showing feature-level fallback.")
+                    if hasattr(diabetes_model, "coef_"):
+                        coefs = diabetes_model.coef_[0]
+                        contributions = (X.values[0] * coefs)
+                        abs_pct = 100 * np.abs(contributions) / np.sum(np.abs(contributions))
+                        df = pd.DataFrame({"feature": feature_names, "contribution": contributions, "pct": abs_pct})
+                        st.table(df.sort_values("pct", ascending=False).head(8))
+                    else:
+                        st.info("No model coefficients available. Try uploading a small dataset to be used as SHAP background for better explanations.")
+            except Exception as e:
+                st.error(f"Prediction error: {e}")
+
+# ---------------- Heart Disease UI ----------------
 if choice == "Heart Disease":
     st.header("Heart Disease Prediction")
+    st.write("Enter patient's clinical values:")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        Age = st.number_input("Age", 0, 120, 50)
-        Sex = st.selectbox("Sex (0=female,1=male)", [0,1])
-        ChestPainType = st.number_input("Chest Pain Type (0-3)", 0, 3, 0)
-        RestingBloodPressure = st.number_input("Resting BP", 0, 250, 120)
-        SerumCholesterol = st.number_input("Cholesterol", 0, 600, 230)
-        FBS = st.selectbox("FBS > 120", [0,1])
-    with c2:
-        RestECG = st.number_input("Resting ECG (0-2)", 0, 2, 1)
-        MaxHR = st.number_input("Max HR", 0, 250, 150)
-        ExAngina = st.selectbox("Exercise Angina", [0,1])
-        STDep = st.number_input("ST Depression", 0.0, 10.0, 1.0)
-        STSlope = st.number_input("ST Segment Slope (0-2)", 0, 2, 1)
-        NumVessels = st.number_input("Major Vessels (0-3)", 0, 3, 0)
-        Thal = st.number_input("Thalassemia (0-3)", 0, 3, 3)
+    cols = st.columns(4)  # Arrange inputs side by side
+    with cols[0]:
+        Age = st.number_input("Age", min_value=0, value=50)
+        Sex = st.selectbox("Sex (0 = female, 1 = male)", [0,1])
+        ChestPainType = st.number_input("Chest Pain Type (0-3)", min_value=0, max_value=3, value=0)
+    with cols[1]:
+        RestingBloodPressure = st.number_input("Resting Blood Pressure", min_value=0, value=120)
+        SerumCholesterol = st.number_input("Serum Cholesterol", min_value=0, value=230)
+        FastingBloodSugarOver120 = st.selectbox("Fasting Blood Sugar > 120 mg/dl", [0,1])
+    with cols[2]:
+        RestingECG = st.number_input("Resting ECG (0-2)", min_value=0, max_value=2, value=1)
+        MaxHeartRateAchieved = st.number_input("Max Heart Rate Achieved", min_value=0, value=150)
+        ExerciseInducedAngina = st.selectbox("Exercise Induced Angina (0 or 1)", [0,1])
+    with cols[3]:
+        STDepression = st.number_input("ST Depression", format="%.2f", value=1.0)
+        STSegmentSlope = st.number_input("ST Segment Slope (0-2)", min_value=0, max_value=2, value=1)
+        NumMajorVesselsColored = st.number_input("Number of Major Vessels Colored (0-3)", min_value=0, max_value=3, value=0)
+        ThalassemiaType = st.number_input("Thalassemia Type (0-3)", min_value=0, max_value=3, value=3)
 
     feat_names_heart = ['Age','Sex','ChestPainType','RestingBloodPressure','SerumCholesterol',
                         'FastingBloodSugarOver120','RestingECG','MaxHeartRateAchieved',
                         'ExerciseInducedAngina','STDepression','STSegmentSlope','NumMajorVesselsColored','ThalassemiaType']
 
-    Xh = pd.DataFrame([[Age,Sex,ChestPainType,RestingBloodPressure,SerumCholesterol,
-                        FBS,RestECG,MaxHR,ExAngina,STDep,STSlope,NumVessels,Thal]],
-                      columns=feat_names_heart)
+    Xh = pd.DataFrame([[Age,Sex,ChestPainType,RestingBloodPressure,SerumCholesterol,FastingBloodSugarOver120,
+                        RestingECG,MaxHeartRateAchieved,ExerciseInducedAngina,STDepression,STSegmentSlope,
+                        NumMajorVesselsColored,ThalassemiaType]], columns=feat_names_heart)
 
     if st.button("Predict Heart Disease"):
-        if heart_model:
-            pred = heart_model.predict(Xh)[0]
-            prob = heart_model.predict_proba(Xh)[0,1] if hasattr(heart_model,"predict_proba") else None
-            st.write("✅ No heart disease" if pred==0 else "⚠️ Heart disease")
-            if prob is not None:
-                st.write(f"Probability: {prob*100:.1f}%")
-            st.info(explain_with_fallback(heart_model, Xh, feat_names_heart))
+        if heart_model is None:
+            st.error("Heart model not loaded.")
+        else:
+            try:
+                pred = heart_model.predict(Xh)[0]
+                prob = None
+                if hasattr(heart_model, "predict_proba"):
+                    prob = heart_model.predict_proba(Xh)[0,1]
+                elif hasattr(heart_model, "decision_function"):
+                    import scipy.special as sc
+                    prob = sc.expit(heart_model.decision_function(Xh)[0])
+                if prob is not None:
+                    st.write(f"Predicted probability of disease: **{prob*100:.1f}%**")
+                st.write("Predicted class:", "⚠️ Heart disease" if pred==1 else "✅ Not heart disease")
 
-# ---------------- Parkinson's ----------------
+                st.subheader("Why the model decided this?")
+                t, shap_res, error = explain_with_fallback(heart_model, Xh)
+                if t == "shap":
+                    display_shap_waterfall(shap_res, feat_names_heart)
+                    st.markdown(contribution_text_from_shap(shap_res, feat_names_heart, top_n=6), unsafe_allow_html=True)
+                else:
+                    st.warning(f"SHAP explanation failed: {error}. Showing fallback.")
+                    if hasattr(heart_model, "coef_"):
+                        coefs = heart_model.coef_[0]
+                        contributions = (Xh.values[0] * coefs)
+                        abs_pct = 100 * np.abs(contributions) / np.sum(np.abs(contributions))
+                        df = pd.DataFrame({"feature": feat_names_heart, "contribution": contributions, "pct": abs_pct})
+                        st.table(df.sort_values("pct", ascending=False).head(8))
+                    else:
+                        st.info("No coefficients to show. Consider uploading a background dataset for better SHAP explanations.")
+            except Exception as e:
+                st.error(f"Prediction error: {e}")
+
+# ---------------- Parkinson's UI ----------------
 if choice == "Parkinson's":
-    st.header("Parkinson's Prediction")
+    st.header("Parkinson's Disease Prediction")
+    st.write("Enter vocal features:")
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    cols = st.columns(4)  # Arrange inputs side by side
+    with cols[0]:
         Fo = st.number_input("MDVP:Fo(Hz)", value=120.0)
         Fhi = st.number_input("MDVP:Fhi(Hz)", value=150.0)
         Flo = st.number_input("MDVP:Flo(Hz)", value=110.0)
-    with c2:
-        Jitter = st.number_input("MDVP:Jitter(%)", value=0.01)
-        JitterAbs = st.number_input("MDVP:Jitter(Abs)", value=0.00008)
+        Jitter = st.number_input("MDVP:Jitter(%)", value=0.01, format="%.5f")
+        JitterAbs = st.number_input("MDVP:Jitter(Abs)", value=0.00008, format="%.8f")
         RAP = st.number_input("MDVP:RAP", value=0.004)
+    with cols[1]:
         PPQ = st.number_input("MDVP:PPQ", value=0.006)
-    with c3:
+        DDP = st.number_input("Jitter:DDP", value=0.009)
         Shimmer = st.number_input("MDVP:Shimmer", value=0.05)
+        Shimmer_dB = st.number_input("MDVP:Shimmer(dB)", value=0.5)
+        APQ3 = st.number_input("Shimmer:APQ3", value=0.02)
+        APQ5 = st.number_input("Shimmer:APQ5", value=0.03)
+    with cols[2]:
+        APQ = st.number_input("MDVP:APQ", value=0.03)
+        DDA = st.number_input("Shimmer:DDA", value=0.06)
+        NHR = st.number_input("NHR", value=0.02)
         HNR = st.number_input("HNR", value=20.0)
+        RPDE = st.number_input("RPDE", value=0.4)
+        DFA = st.number_input("DFA", value=0.8)
+    with cols[3]:
+        spread1 = st.number_input("spread1", value=-4.0)
+        spread2 = st.number_input("spread2", value=0.3)
+        D2 = st.number_input("D2", value=2.3)
         PPE = st.number_input("PPE", value=0.28)
 
-    feat_names_par = ['MDVP:Fo(Hz)','MDVP:Fhi(Hz)','MDVP:Flo(Hz)','MDVP:Jitter(%)','MDVP:Jitter(Abs)','MDVP:RAP','MDVP:PPQ','MDVP:Shimmer','HNR','PPE']
+    feat_names_par = ['MDVP:Fo(Hz)','MDVP:Fhi(Hz)','MDVP:Flo(Hz)','MDVP:Jitter(%)','MDVP:Jitter(Abs)',
+                      'MDVP:RAP','MDVP:PPQ','Jitter:DDP','MDVP:Shimmer','MDVP:Shimmer(dB)','Shimmer:APQ3',
+                      'Shimmer:APQ5','MDVP:APQ','Shimmer:DDA','NHR','HNR','RPDE','DFA','spread1','spread2','D2','PPE']
 
-    Xp = pd.DataFrame([[Fo,Fhi,Flo,Jitter,JitterAbs,RAP,PPQ,Shimmer,HNR,PPE]], columns=feat_names_par)
+    Xp = pd.DataFrame([[Fo,Fhi,Flo,Jitter,JitterAbs,RAP,PPQ,DDP,Shimmer,Shimmer_dB,APQ3,APQ5,APQ,DDA,NHR,HNR,RPDE,DFA,spread1,spread2,D2,PPE]],
+                      columns=feat_names_par)
 
     if st.button("Predict Parkinson's"):
-        if parkinsons_model:
-            pred = parkinsons_model.predict(Xp)[0]
-            prob = parkinsons_model.predict_proba(Xp)[0,1] if hasattr(parkinsons_model,"predict_proba") else None
-            st.write("✅ No Parkinson's" if pred==0 else "⚠️ Parkinson's")
-            if prob is not None:
-                st.write(f"Probability: {prob*100:.1f}%")
-            st.info(explain_with_fallback(parkinsons_model, Xp, feat_names_par))
+        if parkinsons_model is None:
+            st.error("Parkinson's model not loaded.")
+        else:
+            try:
+                pred = parkinsons_model.predict(Xp)[0]
+                prob = None
+                if hasattr(parkinsons_model, "predict_proba"):
+                    prob = parkinsons_model.predict_proba(Xp)[0,1]
+                elif hasattr(parkinsons_model, "decision_function"):
+                    import scipy.special as sc
+                    prob = sc.expit(parkinsons_model.decision_function(Xp)[0])
+                if prob is not None:
+                    st.write(f"Predicted probability: **{prob*100:.1f}%**")
+                st.write("Predicted class:", "⚠️ Parkinson's" if pred==1 else "✅ Not Parkinson's")
 
+                st.subheader("Why the model decided this?")
+                t, shap_res, error = explain_with_fallback(parkinsons_model, Xp)
+                if t == "shap":
+                    display_shap_waterfall(shap_res, feat_names_par)
+                    st.markdown(contribution_text_from_shap(shap_res, feat_names_par, top_n=6), unsafe_allow_html=True)
+                else:
+                    st.warning(f"SHAP explanation failed: {error}. Showing fallback.")
+                    if hasattr(parkinsons_model, "coef_"):
+                        coefs = parkinsons_model.coef_[0]
+                        contributions = (Xp.values[0] * coefs)
+                        abs_pct = 100 * np.abs(contributions) / np.sum(np.abs(contributions))
+                        df = pd.DataFrame({"feature": feat_names_par, "contribution": contributions, "pct": abs_pct})
+                        st.table(df.sort_values("pct", ascending=False).head(8))
+                    else:
+                        st.info("No coefficients to show. Consider providing background dataset for SHAP.")
+            except Exception as e:
+                st.error(f"Prediction error: {e}")
